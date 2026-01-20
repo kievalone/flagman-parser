@@ -6,7 +6,7 @@ import pandas as pd
 import time
 from io import BytesIO
 
-st.set_page_config(page_title="Flagman Parser Dual", page_icon="🎣")
+st.set_page_config(page_title="Flagman Parser Combined", page_icon="🎣")
 
 def get_soup(url, lang="uk"):
     cookies = {'i18n_redirected': lang}
@@ -22,7 +22,6 @@ def get_soup(url, lang="uk"):
         return None
 
 def get_product_links(cat_url, max_pages):
-    # Собираем ссылки только один раз (с любой версии), так как список товаров одинаковый
     links = []
     page = 1
     while True:
@@ -49,10 +48,8 @@ def get_product_links(cat_url, max_pages):
     return list(dict.fromkeys(links))
 
 def parse_page_content(soup):
-    """Вспомогательная функция для извлечения текстов со страницы"""
     if not soup: return "N/A", "N/A", {}
     
-    # Данные из JSON для подстраховки
     product_json = {}
     scripts = soup.find_all("script", type="application/ld+json")
     for script in scripts:
@@ -63,15 +60,12 @@ def parse_page_content(soup):
                 break
         except: continue
 
-    # Название
     title_tag = soup.find("h1")
     title = title_tag.get_text(strip=True) if title_tag else product_json.get("name", "N/A")
     
-    # Описание
     desc_block = soup.select_one(".product-description-text") or soup.select_one(".product-description__content")
     description = desc_block.get_text(separator="\n", strip=True) if desc_block else ""
     
-    # Характеристики (словарь)
     chars = {}
     char_items = soup.select(".chars-items-wrapper .chars-item") or soup.select(".product-properties__item")
     for ci in char_items:
@@ -83,6 +77,7 @@ def parse_page_content(soup):
 
 # --- ИНТЕРФЕЙС ---
 st.title("🎣 Flagman Parser (UA + RU в одной строке)")
+st.write("Все данные на одной вкладке. Коды товаров очищены от дублей, фото разбиты по колонкам.")
 
 input_url = st.text_input("Ссылка на категорию", placeholder="https://flagman.ua/...")
 pages_limit = st.number_input("Кол-во страниц (0 = все)", min_value=0, value=1)
@@ -91,37 +86,36 @@ if st.button("Начать парсинг"):
     if not input_url:
         st.error("Введите ссылку!")
     else:
-        # Базовая подготовка ссылок
         clean_url = input_url.replace("/ru/", "/")
         base_links = get_product_links(clean_url, None if pages_limit == 0 else pages_limit)
         
-        st.info(f"Найдено товаров: {len(base_links)}. Начинаю детальный сбор...")
+        st.info(f"Найдено товаров: {len(base_links)}. Начинаю сбор (две версии для каждого товара)...")
         
         final_data = []
         progress_bar = st.progress(0)
         
+        # Список имен полей, которые мы НЕ хотим видеть в характеристиках (так как они уже есть в Артикуле)
+        skip_keys = ["Код товару", "Код товара", "Артикул", "Артикул товару"]
+
         for i, link in enumerate(base_links):
             ua_link = link.replace("/ru/", "/")
             ru_link = link.replace("flagman.ua/", "flagman.ua/ru/")
             
-            # Парсим обе версии
             soup_ua = get_soup(ua_link, "uk")
-            time.sleep(0.3)
+            time.sleep(0.2)
             soup_ru = get_soup(ru_link, "ru")
             
             title_ua, desc_ua, chars_ua, json_ua = parse_page_content(soup_ua)
             title_ru, desc_ru, chars_ru, json_ru = parse_page_content(soup_ru)
             
-            # Общие данные (берем из UA версии)
             sku = json_ua.get("sku", "N/A")
             price = json_ua.get("offers", {}).get("price", "N/A")
             brand = json_ua.get("brand", {}).get("name", "N/A")
             
-            # Фотографии (разбиваем по колонкам)
             img_tags = soup_ua.select(".product-images img")
             image_urls = [img.get('src') for img in img_tags if img.get('src')]
             
-            # Собираем строку
+            # Основная строка
             row = {
                 "Артикул": sku,
                 "Бренд": brand,
@@ -129,39 +123,41 @@ if st.button("Начать парсинг"):
                 "Назва (UA)": title_ua,
                 "Название (RU)": title_ru,
                 "Опис (UA)": desc_ua,
-                "Описание (RU)": desc_ru,
-                "Ссылка (UA)": ua_link,
-                "Ссылка (RU)": ru_link
+                "Описание (RU)": desc_ru
             }
             
-            # Добавляем фото в колонки "Фото 1", "Фото 2" и т.д.
-            for idx, img_url in enumerate(image_urls[:15]): # Ограничим до 15 фото
+            # Добавляем фото по колонкам
+            for idx, img_url in enumerate(image_urls[:15]): 
                 row[f"Фото {idx+1}"] = img_url
                 
-            # Добавляем характеристики (UA версия)
+            # Добавляем характеристики UA (пропуская код товара)
             for k, v in chars_ua.items():
-                row[f"{k} (UA)"] = v
+                if k not in skip_keys:
+                    row[f"{k} (UA)"] = v
             
-            # Добавляем характеристики (RU версия)
+            # Добавляем характеристики RU (пропуская код товара)
             for k, v in chars_ru.items():
-                row[f"{k} (RU)"] = v
+                if k not in skip_keys:
+                    row[f"{k} (RU)"] = v
+
+            row["Ссылка (UA)"] = ua_link
+            row["Ссылка (RU)"] = ru_link
 
             final_data.append(row)
             progress_bar.progress((i + 1) / len(base_links))
-            time.sleep(0.7)
+            time.sleep(0.5)
 
         if final_data:
             df = pd.DataFrame(final_data)
             
-            # Создаем Excel
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Flagman Data', index=False)
             
-            st.success("Парсинг успешно завершен!")
+            st.success("Готово!")
             st.download_button(
-                label="📥 Скачать Excel (UA+RU)",
+                label="📥 Скачать Excel результат",
                 data=output.getvalue(),
-                file_name="flagman_combined.xlsx",
+                file_name="flagman_pro_export.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
