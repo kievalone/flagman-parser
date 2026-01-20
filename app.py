@@ -5,9 +5,10 @@ import json
 import pandas as pd
 import time
 import random
+import re
 from io import BytesIO
 
-st.set_page_config(page_title="Flagman Pro Ultra", page_icon="🎣", layout="wide")
+st.set_page_config(page_title="Flagman Smart Monitor Pro", page_icon="🎣", layout="wide")
 
 # --- Память сессии ---
 if 'all_links' not in st.session_state:
@@ -73,7 +74,7 @@ def get_product_links(cat_url, max_pages):
     return list(dict.fromkeys(links))
 
 def parse_page_content(soup):
-    if not soup: return "N/A", "N/A", {}
+    if not soup: return "N/A", "N/A", {}, {}
     product_json = {}
     scripts = soup.find_all("script", type="application/ld+json")
     for script in scripts:
@@ -84,15 +85,11 @@ def parse_page_content(soup):
                 break
         except: continue
     
-    # Название
     title_tag = soup.find("h1")
     title = title_tag.get_text(strip=True) if title_tag else product_json.get("name", "N/A")
-    
-    # Описание
     desc_block = soup.select_one(".product-description-text") or soup.select_one(".product-description__content")
     description = desc_block.get_text(separator="\n", strip=True) if desc_block else ""
     
-    # Характеристики
     chars = {}
     char_items = soup.select(".chars-items-wrapper .chars-item") or soup.select(".product-properties__item")
     for ci in char_items:
@@ -150,57 +147,66 @@ if st.session_state.all_links:
     total = len(st.session_state.all_links)
     done = len(st.session_state.scraped_data)
     
-    st.subheader("3. Запуск парсинга")
-    st.info(f"В очереди: {total} | Готово: {done}")
+    st.subheader("3. Фильтр и запуск парсинга")
+    
+    # --- НОВОЕ: Ввод списка артикулов ---
+    skus_raw = st.text_area("Опционально: введите список Артикулов (через запятую или с новой строки) для фильтрации. Если пусто — парсим всё.", placeholder="K1000S, FTN2500S, BF3000S")
+    
+    target_skus = []
+    if skus_raw:
+        # Разбиваем текст на список, чистим пробелы
+        target_skus = [x.strip() for x in re.split(r'[,\n\s]+', skus_raw) if x.strip()]
+        st.info(f"Будем искать только эти артикулы: {len(target_skus)} шт.")
+
+    st.info(f"В очереди на проверку: {total} | Уже сохранено: {done}")
     
     col_from, col_count, col_go = st.columns([1, 1, 2])
     with col_from:
-        start_idx = st.number_input("Начать с №", min_value=1, max_value=total, value=done + 1)
+        start_idx = st.number_input("Начать с № в очереди", min_value=1, max_value=total, value=1)
     with col_count:
-        batch_size = st.number_input("Кол-во для этой пачки", min_value=1, max_value=200, value=20)
+        batch_size = st.number_input("Кол-во товаров для проверки", min_value=1, max_value=500, value=50)
     
-    if col_go.button("🚀 ПАРСИТЬ ПАЧКУ"):
+    if col_go.button("🚀 ЗАПУСТИТЬ ПАРСИНГ ПАЧКИ"):
         end_idx = min(start_idx + batch_size - 1, total)
         work_links = st.session_state.all_links[start_idx-1 : end_idx]
         
         bar = st.progress(0)
         status_info = st.empty()
         
-        # Список ключей для удаления из характеристик
-        skip_keys = [
-            "Код товару", "Код товара", "Артикул", "Артикул товару", 
-            "Виробник", "Производитель" # Убираем дубли производителей
-        ]
+        skip_keys = ["Код товару", "Код товара", "Артикул", "Артикул товару", "Виробник", "Производитель"]
 
         for i, link in enumerate(work_links):
             current_num = start_idx + i
-            status_info.write(f"🔹 Товар **{current_num} из {total}** | Обрабатываем...")
+            status_info.write(f"🔹 Проверка товара **{current_num} из {total}**...")
             
             ua_link = link.replace("/ru/", "/")
             ru_link = link.replace("flagman.ua/", "flagman.ua/ru/")
             
+            # 1. Сначала загружаем UA версию, чтобы проверить Артикул
             soup_ua = get_soup(ua_link, "uk")
-            time.sleep(0.1)
-            soup_ru = get_soup(ru_link, "ru")
+            if not soup_ua: continue
             
             t_ua, d_ua, c_ua, j_ua = parse_page_content(soup_ua)
+            sku = j_ua.get("sku", "N/A")
+
+            # 2. Если задан фильтр по SKU и текущий товар НЕ в списке — пропускаем
+            if target_skus and sku not in target_skus:
+                status_info.write(f"⏩ Пропускаю {sku} (не в списке)")
+                bar.progress((i + 1) / len(work_links))
+                continue
+
+            # 3. Если товар подходит (или фильтр пуст), допаршиваем RU версию
+            status_info.write(f"✅ Парсинг {sku}...")
+            soup_ru = get_soup(ru_link, "ru")
             t_ru, d_ru, c_ru, j_ru = parse_page_content(soup_ru)
             
-            sku = j_ua.get("sku", "N/A")
             brand = j_ua.get("brand", {}).get("name", "N/A")
             
-            # Чистим ссылки на фото от мусора (data:image и прочее)
             img_tags = soup_ua.select(".product-images img")
-            clean_image_urls = []
-            for img in img_tags:
-                src = img.get('src')
-                if src and not src.startswith("data:image"):
-                    clean_image_urls.append(src)
-            
-            # Если в блоке пусто, пробуем мета-тег (главное фото)
+            clean_image_urls = [img.get('src') for img in img_tags if img.get('src') and not img.get('src').startswith("data:image")]
             if not clean_image_urls:
-                og_image = soup_ua.find("meta", property="og:image")
-                if og_image: clean_image_urls.append(og_image["content"])
+                og = soup_ua.find("meta", property="og:image")
+                if og: clean_image_urls.append(og["content"])
             
             row = {
                 "Артикул": sku,
@@ -209,14 +215,10 @@ if st.session_state.all_links:
                 "Назва (UA)": t_ua,
                 "Название (RU)": t_ru,
                 "Опис (UA)": d_ua,
-                "Описание (RU)": d_ru  # ИСПРАВЛЕНО: было t_ru
+                "Описание (RU)": d_ru
             }
             
-            # Раскладываем фото
-            for idx, img_url in enumerate(clean_image_urls[:15]): 
-                row[f"Фото {idx+1}"] = img_url
-            
-            # Характеристики без лишних колонок
+            for idx, img_url in enumerate(clean_image_urls[:15]): row[f"Фото {idx+1}"] = img_url
             for k, v in c_ua.items():
                 if k not in skip_keys: row[f"{k} (UA)"] = v
             for k, v in c_ru.items():
@@ -225,12 +227,12 @@ if st.session_state.all_links:
             row["Ссылка (UA)"] = ua_link
             row["Ссылка (RU)"] = ru_link
 
-            # Обновляем или добавляем в список
+            # Добавляем в результаты, если еще нет
             if not any(d['Артикул'] == sku for d in st.session_state.scraped_data):
                 st.session_state.scraped_data.append(row)
             
             bar.progress((i + 1) / len(work_links))
-            time.sleep(random.uniform(0.6, 1.2))
+            time.sleep(random.uniform(0.5, 0.8))
 
         status_info.empty()
         st.rerun()
@@ -247,6 +249,6 @@ if st.session_state.scraped_data:
     st.download_button(
         label=f"📥 Скачать Excel ({len(st.session_state.scraped_data)} товаров)",
         data=output.getvalue(),
-        file_name="flagman_data_combined.xlsx",
+        file_name="flagman_custom_skus.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
