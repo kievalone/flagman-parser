@@ -8,9 +8,10 @@ import random
 import re
 from io import BytesIO
 
+# Конфигурация страницы должна быть ПЕРВОЙ командой
 st.set_page_config(page_title="Flagman Monitor PRO", page_icon="🎣", layout="wide")
 
-# --- Инициализация переменных сессии (общие для всех вкладок) ---
+# --- Инициализация памяти сессии ---
 if 'all_links' not in st.session_state: st.session_state.all_links = []
 if 'scraped_data' not in st.session_state: st.session_state.scraped_data = []
 if 'found_categories' not in st.session_state: st.session_state.found_categories = []
@@ -89,15 +90,20 @@ def parse_page_content(soup):
         if len(p) >= 2: chars[p[0].get_text(strip=True)] = p[1].get_text(strip=True)
     return title, d_clean, d_html, chars, product_json
 
-# --- ИНТЕРФЕЙС ПАРСЕРА ---
-st.title("🎣 Мониторинг товаров Flagman")
+# --- БОКОВАЯ ПАНЕЛЬ ---
+with st.sidebar:
+    st.info(f"📦 В памяти: {len(st.session_state.scraped_data)} товаров")
+    if st.button("🗑 Очистить память"):
+        st.session_state.scraped_data = []
+        st.rerun()
 
-st.sidebar.info(f"Товаров в памяти: {len(st.session_state.scraped_data)}")
+# --- ОСНОВНОЙ ЭКРАН ПАРСЕРА ---
+st.title("🎣 Мониторинг Flagman")
 
-st.subheader("1. Настройка категории")
+st.subheader("1. Настройка")
 col_url, col_pg = st.columns([3, 1])
 with col_url:
-    input_url = st.text_input("Ссылка на категорию (UA или RU)", placeholder="https://flagman.ua/...")
+    input_url = st.text_input("Ссылка на категорию", placeholder="https://flagman.ua/...")
 with col_pg:
     pages_limit = st.number_input("Стр. в подразделе (0=все)", min_value=0, value=1)
 
@@ -111,11 +117,11 @@ if st.button("🔍 Найти подразделы"):
             st.rerun()
 
 if st.session_state.found_categories:
-    st.subheader("2. Выбор подразделов")
+    st.markdown("---")
     cat_map = {c['name']: c['url'] for c in st.session_state.found_categories}
-    selected_cat_names = st.multiselect("Мониторить:", options=list(cat_map.keys()), default=list(cat_map.keys()))
+    selected_cat_names = st.multiselect("Выберите подразделы:", options=list(cat_map.keys()), default=list(cat_map.keys()))
     
-    if st.button("🔎 Получить список всех ссылок"):
+    if st.button("🔎 Собрать ссылки на товары"):
         all_p_links = []
         with st.status("Сбор ссылок...") as s:
             for name in selected_cat_names:
@@ -126,27 +132,22 @@ if st.session_state.found_categories:
         st.rerun()
 
 if st.session_state.all_links:
+    st.markdown("---")
     total = len(st.session_state.all_links)
-    scraped_count = len(st.session_state.scraped_data)
-    st.subheader("3. Фильтры и запуск")
     
     col_skus, col_opts = st.columns([2, 1])
     with col_skus:
-        skus_raw = st.text_area("Список Артикулов для фильтра (необязательно):")
+        skus_raw = st.text_area("Фильтр по Артикулам (необязательно):")
     with col_opts:
         clean_html_flag = st.checkbox("Очищать HTML в описании", value=True)
-        if st.button("🗑 Очистить базу"):
-            st.session_state.scraped_data = []
-            st.session_state.current_queue_pos = 1
-            st.rerun()
 
     target_skus = [x.strip() for x in re.split(r'[,\n\s]+', skus_raw) if x.strip()] if skus_raw else []
 
-    st.info(f"📋 Очередь: **{total}** | 📍 Позиция: **{st.session_state.current_queue_pos}** | ✅ Найдено: **{scraped_count}**")
+    st.info(f"📋 В очереди: **{total}** | 📍 Позиция: **{st.session_state.current_queue_pos}** | ✅ Найдено: **{len(st.session_state.scraped_data)}**")
     
     col_from, col_count, col_go = st.columns([1, 1, 2])
     with col_from:
-        start_idx = st.number_input("Начать с №", min_value=1, max_value=total, value=int(min(st.session_state.current_queue_pos, total)))
+        start_idx = st.number_input("Начать с №", min_value=1, max_value=total if total > 0 else 1, value=int(min(st.session_state.current_queue_pos, total if total > 0 else 1)))
     with col_count:
         batch_size = st.number_input("Кол-во для проверки", min_value=1, max_value=1000, value=20)
     
@@ -197,6 +198,7 @@ if st.session_state.all_links:
         st.rerun()
 
 if st.session_state.scraped_data:
+    st.write("---")
     df = pd.DataFrame(st.session_state.scraped_data)
     st.dataframe(df.head(5))
     output = BytesIO()
