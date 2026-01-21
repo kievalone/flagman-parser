@@ -89,10 +89,8 @@ def parse_page_content(soup):
     
     title_tag = soup.find("h1")
     title = title_tag.get_text(strip=True) if title_tag else product_json.get("name", "N/A")
-    
     desc_block = soup.select_one(".product-description-text") or soup.select_one(".product-description__content")
     
-    # Собираем два варианта описания
     description_clean = desc_block.get_text(separator="\n", strip=True) if desc_block else ""
     description_html = desc_block.decode_contents().strip() if desc_block else ""
     
@@ -118,12 +116,9 @@ with st.sidebar:
         st.session_state.current_queue_pos = 1
         st.rerun()
     
-    if st.button("📍 Сбросить позицию очереди на 1"):
+    if st.button("📍 Сбросить позицию на 1"):
         st.session_state.current_queue_pos = 1
         st.rerun()
-    
-    st.write("---")
-    st.write(f"Уже в базе: **{len(st.session_state.scraped_data)}**")
 
 st.subheader("1. Настройка категории")
 col_url, col_pg = st.columns([3, 1])
@@ -159,26 +154,27 @@ if st.session_state.found_categories:
 
 if st.session_state.all_links:
     total = len(st.session_state.all_links)
+    scraped_count = len(st.session_state.scraped_data)
     
     st.subheader("3. Фильтры и запуск")
     
     col_skus, col_opts = st.columns([2, 1])
     with col_skus:
-        skus_raw = st.text_area("Список Артикулов (через запятую или Enter), если нужно отфильтровать очередь:", height=100)
+        skus_raw = st.text_area("Список Артикулов (через запятую или Enter) для фильтра:", height=100)
     with col_opts:
-        # УЛУЧШЕНИЕ 1: Галочка очистки HTML
-        clean_html_flag = st.checkbox("Очищать HTML теги в описании", value=True, help="Если выключить, описание сохранится с тегами <p>, <b> и т.д.")
+        clean_html_flag = st.checkbox("Очищать HTML теги в описании", value=True)
     
     target_skus = [x.strip() for x in re.split(r'[,\n\s]+', skus_raw) if x.strip()] if skus_raw else []
 
-    st.info(f"Товаров в очереди: {total} | Текущая позиция: {st.session_state.current_queue_pos}")
+    st.info(f"📋 Очередь: **{total}** | 📍 Позиция: **{st.session_state.current_queue_pos}** | ✅ Найдено: **{scraped_count}**")
     
     col_from, col_count, col_go = st.columns([1, 1, 2])
     with col_from:
-        # УЛУЧШЕНИЕ 2: Автоматическая подстановка следующего числа
-        start_idx = st.number_input("Начать с №", min_value=1, max_value=total, value=st.session_state.current_queue_pos)
+        # ЗАЩИТА: ограничиваем значение текущей позицией, но не выше максимума
+        safe_pos = min(st.session_state.current_queue_pos, total)
+        start_idx = st.number_input("Начать с №", min_value=1, max_value=total, value=int(safe_pos))
     with col_count:
-        batch_size = st.number_input("Кол-во для этой пачки", min_value=1, max_value=500, value=20)
+        batch_size = st.number_input("Кол-во для проверки", min_value=1, max_value=1000, value=50)
     
     if col_go.button("🚀 ЗАПУСТИТЬ ПАРСИНГ ПАЧКИ"):
         end_idx = min(start_idx + batch_size - 1, total)
@@ -190,7 +186,7 @@ if st.session_state.all_links:
 
         for i, link in enumerate(work_links):
             current_num = start_idx + i
-            status_info.write(f"🔹 **{current_num} из {total}** | Проверка...")
+            status_info.write(f"🔹 Проверка **{current_num} из {total}**...")
             
             ua_link = link.replace("/ru/", "/")
             ru_link = link.replace("flagman.ua/", "flagman.ua/ru/")
@@ -201,12 +197,11 @@ if st.session_state.all_links:
             t_ua, d_ua_clean, d_ua_raw, c_ua, j_ua = parse_page_content(soup_ua)
             sku = j_ua.get("sku", "N/A")
 
-            # Фильтр по SKU
             if target_skus and sku not in target_skus:
                 bar.progress((i + 1) / len(work_links))
                 continue
 
-            status_info.write(f"✅ **{current_num} из {total}** | Парсинг {sku}...")
+            status_info.write(f"✅ Сохранение: **{sku}** (Товар №{current_num})")
             soup_ru = get_soup(ru_link, "ru")
             t_ru, d_ru_clean, d_ru_raw, c_ru, j_ru = parse_page_content(soup_ru)
             
@@ -216,7 +211,6 @@ if st.session_state.all_links:
                 og = soup_ua.find("meta", property="og:image")
                 if og: clean_image_urls.append(og["content"])
             
-            # Выбор типа описания на основе галочки
             desc_ua = d_ua_clean if clean_html_flag else d_ua_raw
             desc_ru = d_ru_clean if clean_html_flag else d_ru_raw
 
@@ -241,25 +235,26 @@ if st.session_state.all_links:
                 st.session_state.scraped_data.append(row)
             
             bar.progress((i + 1) / len(work_links))
-            time.sleep(random.uniform(0.4, 0.7))
+            time.sleep(random.uniform(0.3, 0.6))
 
-        # Сохраняем новую позицию в очереди
-        st.session_state.current_queue_pos = end_idx + 1
+        # КОРРЕКТНОЕ ОБНОВЛЕНИЕ: не даем выйти за пределы total
+        new_pos = end_idx + 1
+        st.session_state.current_queue_pos = min(new_pos, total)
         status_info.empty()
         st.rerun()
 
 if st.session_state.scraped_data:
-    st.subheader("4. Результаты")
+    st.subheader("4. Результаты и Экспорт")
     df = pd.DataFrame(st.session_state.scraped_data)
-    st.dataframe(df.head(10))
+    st.dataframe(df.head(5))
     
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='Flagman_Data', index=False)
     
     st.download_button(
-        label=f"📥 Скачать Excel ({len(st.session_state.scraped_data)} товаров)",
+        label=f"📥 Скачать Excel ({len(st.session_state.scraped_data)} шт.)",
         data=output.getvalue(),
-        file_name="flagman_custom_export.xlsx",
+        file_name="flagman_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
