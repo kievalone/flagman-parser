@@ -8,15 +8,17 @@ import random
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="Flagman Smart Monitor Pro", page_icon="🎣", layout="wide")
+st.set_page_config(page_title="Flagman Monitor Ultra Pro", page_icon="🎣", layout="wide")
 
-# --- Память сессии ---
+# --- Инициализация памяти сессии ---
 if 'all_links' not in st.session_state:
     st.session_state.all_links = []
 if 'scraped_data' not in st.session_state:
     st.session_state.scraped_data = []
 if 'found_categories' not in st.session_state:
     st.session_state.found_categories = []
+if 'current_queue_pos' not in st.session_state:
+    st.session_state.current_queue_pos = 1
 
 # --- Функции парсинга ---
 
@@ -74,7 +76,7 @@ def get_product_links(cat_url, max_pages):
     return list(dict.fromkeys(links))
 
 def parse_page_content(soup):
-    if not soup: return "N/A", "N/A", {}, {}
+    if not soup: return "N/A", "N/A", "N/A", {}, {}
     product_json = {}
     scripts = soup.find_all("script", type="application/ld+json")
     for script in scripts:
@@ -87,8 +89,12 @@ def parse_page_content(soup):
     
     title_tag = soup.find("h1")
     title = title_tag.get_text(strip=True) if title_tag else product_json.get("name", "N/A")
+    
     desc_block = soup.select_one(".product-description-text") or soup.select_one(".product-description__content")
-    description = desc_block.get_text(separator="\n", strip=True) if desc_block else ""
+    
+    # Собираем два варианта описания
+    description_clean = desc_block.get_text(separator="\n", strip=True) if desc_block else ""
+    description_html = desc_block.decode_contents().strip() if desc_block else ""
     
     chars = {}
     char_items = soup.select(".chars-items-wrapper .chars-item") or soup.select(".product-properties__item")
@@ -97,30 +103,38 @@ def parse_page_content(soup):
         if len(p_tags) >= 2:
             chars[p_tags[0].get_text(strip=True)] = p_tags[1].get_text(strip=True)
             
-    return title, description, chars, product_json
+    return title, description_clean, description_html, chars, product_json
 
 # --- Интерфейс ---
 
-st.title("🎣 Flagman Smart Monitor Pro")
+st.title("🎣 Flagman Smart Monitor Pro+")
 
 with st.sidebar:
-    st.header("Управление данными")
-    if st.button("🗑 Очистить память и ссылки"):
+    st.header("Управление")
+    if st.button("🗑 Сбросить всё"):
         st.session_state.all_links = []
         st.session_state.scraped_data = []
         st.session_state.found_categories = []
+        st.session_state.current_queue_pos = 1
         st.rerun()
+    
+    if st.button("📍 Сбросить позицию очереди на 1"):
+        st.session_state.current_queue_pos = 1
+        st.rerun()
+    
+    st.write("---")
+    st.write(f"Уже в базе: **{len(st.session_state.scraped_data)}**")
 
 st.subheader("1. Настройка категории")
 col_url, col_pg = st.columns([3, 1])
 with col_url:
     input_url = st.text_input("Ссылка на категорию", placeholder="https://flagman.ua/ru/kotushky/c166336")
 with col_pg:
-    pages_limit = st.number_input("Стр. в разделе (0=все)", min_value=0, value=1)
+    pages_limit = st.number_input("Стр. в каждом подразделе (0=все)", min_value=0, value=1)
 
-if st.button("🔍 Проверить разделы"):
+if st.button("🔍 Найти подразделы"):
     if input_url:
-        with st.spinner("Анализ..."):
+        with st.spinner("Анализ структуры..."):
             base_url = input_url.replace("/ru/", "/")
             soup_main = get_soup(base_url)
             found = get_subcategories_with_names(soup_main)
@@ -128,11 +142,11 @@ if st.button("🔍 Проверить разделы"):
             st.rerun()
 
 if st.session_state.found_categories:
-    st.subheader("2. Выбор категорий")
+    st.subheader("2. Выбор подразделов")
     cat_map = {c['name']: c['url'] for c in st.session_state.found_categories}
     selected_cat_names = st.multiselect("Мониторить подразделы:", options=list(cat_map.keys()), default=list(cat_map.keys()))
     
-    if st.button("🔎 Собрать список товаров"):
+    if st.button("🔎 Получить список всех ссылок"):
         all_p_links = []
         with st.status("Сбор ссылок...") as s:
             for name in selected_cat_names:
@@ -145,26 +159,26 @@ if st.session_state.found_categories:
 
 if st.session_state.all_links:
     total = len(st.session_state.all_links)
-    done = len(st.session_state.scraped_data)
     
-    st.subheader("3. Фильтр и запуск парсинга")
+    st.subheader("3. Фильтры и запуск")
     
-    # --- НОВОЕ: Ввод списка артикулов ---
-    skus_raw = st.text_area("Опционально: введите список Артикулов (через запятую или с новой строки) для фильтрации. Если пусто — парсим всё.", placeholder="K1000S, FTN2500S, BF3000S")
+    col_skus, col_opts = st.columns([2, 1])
+    with col_skus:
+        skus_raw = st.text_area("Список Артикулов (через запятую или Enter), если нужно отфильтровать очередь:", height=100)
+    with col_opts:
+        # УЛУЧШЕНИЕ 1: Галочка очистки HTML
+        clean_html_flag = st.checkbox("Очищать HTML теги в описании", value=True, help="Если выключить, описание сохранится с тегами <p>, <b> и т.д.")
     
-    target_skus = []
-    if skus_raw:
-        # Разбиваем текст на список, чистим пробелы
-        target_skus = [x.strip() for x in re.split(r'[,\n\s]+', skus_raw) if x.strip()]
-        st.info(f"Будем искать только эти артикулы: {len(target_skus)} шт.")
+    target_skus = [x.strip() for x in re.split(r'[,\n\s]+', skus_raw) if x.strip()] if skus_raw else []
 
-    st.info(f"В очереди на проверку: {total} | Уже сохранено: {done}")
+    st.info(f"Товаров в очереди: {total} | Текущая позиция: {st.session_state.current_queue_pos}")
     
     col_from, col_count, col_go = st.columns([1, 1, 2])
     with col_from:
-        start_idx = st.number_input("Начать с № в очереди", min_value=1, max_value=total, value=1)
+        # УЛУЧШЕНИЕ 2: Автоматическая подстановка следующего числа
+        start_idx = st.number_input("Начать с №", min_value=1, max_value=total, value=st.session_state.current_queue_pos)
     with col_count:
-        batch_size = st.number_input("Кол-во товаров для проверки", min_value=1, max_value=500, value=50)
+        batch_size = st.number_input("Кол-во для этой пачки", min_value=1, max_value=500, value=20)
     
     if col_go.button("🚀 ЗАПУСТИТЬ ПАРСИНГ ПАЧКИ"):
         end_idx = min(start_idx + batch_size - 1, total)
@@ -172,35 +186,29 @@ if st.session_state.all_links:
         
         bar = st.progress(0)
         status_info = st.empty()
-        
         skip_keys = ["Код товару", "Код товара", "Артикул", "Артикул товару", "Виробник", "Производитель"]
 
         for i, link in enumerate(work_links):
             current_num = start_idx + i
-            status_info.write(f"🔹 Проверка товара **{current_num} из {total}**...")
+            status_info.write(f"🔹 **{current_num} из {total}** | Проверка...")
             
             ua_link = link.replace("/ru/", "/")
             ru_link = link.replace("flagman.ua/", "flagman.ua/ru/")
             
-            # 1. Сначала загружаем UA версию, чтобы проверить Артикул
             soup_ua = get_soup(ua_link, "uk")
             if not soup_ua: continue
             
-            t_ua, d_ua, c_ua, j_ua = parse_page_content(soup_ua)
+            t_ua, d_ua_clean, d_ua_raw, c_ua, j_ua = parse_page_content(soup_ua)
             sku = j_ua.get("sku", "N/A")
 
-            # 2. Если задан фильтр по SKU и текущий товар НЕ в списке — пропускаем
+            # Фильтр по SKU
             if target_skus and sku not in target_skus:
-                status_info.write(f"⏩ Пропускаю {sku} (не в списке)")
                 bar.progress((i + 1) / len(work_links))
                 continue
 
-            # 3. Если товар подходит (или фильтр пуст), допаршиваем RU версию
-            status_info.write(f"✅ Парсинг {sku}...")
+            status_info.write(f"✅ **{current_num} из {total}** | Парсинг {sku}...")
             soup_ru = get_soup(ru_link, "ru")
-            t_ru, d_ru, c_ru, j_ru = parse_page_content(soup_ru)
-            
-            brand = j_ua.get("brand", {}).get("name", "N/A")
+            t_ru, d_ru_clean, d_ru_raw, c_ru, j_ru = parse_page_content(soup_ru)
             
             img_tags = soup_ua.select(".product-images img")
             clean_image_urls = [img.get('src') for img in img_tags if img.get('src') and not img.get('src').startswith("data:image")]
@@ -208,14 +216,16 @@ if st.session_state.all_links:
                 og = soup_ua.find("meta", property="og:image")
                 if og: clean_image_urls.append(og["content"])
             
+            # Выбор типа описания на основе галочки
+            desc_ua = d_ua_clean if clean_html_flag else d_ua_raw
+            desc_ru = d_ru_clean if clean_html_flag else d_ru_raw
+
             row = {
                 "Артикул": sku,
-                "Бренд": brand,
+                "Бренд": j_ua.get("brand", {}).get("name", "N/A"),
                 "Цена": j_ua.get("offers", {}).get("price", "N/A"),
-                "Назва (UA)": t_ua,
-                "Название (RU)": t_ru,
-                "Опис (UA)": d_ua,
-                "Описание (RU)": d_ru
+                "Назва (UA)": t_ua, "Название (RU)": t_ru,
+                "Опис (UA)": desc_ua, "Описание (RU)": desc_ru
             }
             
             for idx, img_url in enumerate(clean_image_urls[:15]): row[f"Фото {idx+1}"] = img_url
@@ -227,28 +237,29 @@ if st.session_state.all_links:
             row["Ссылка (UA)"] = ua_link
             row["Ссылка (RU)"] = ru_link
 
-            # Добавляем в результаты, если еще нет
             if not any(d['Артикул'] == sku for d in st.session_state.scraped_data):
                 st.session_state.scraped_data.append(row)
             
             bar.progress((i + 1) / len(work_links))
-            time.sleep(random.uniform(0.5, 0.8))
+            time.sleep(random.uniform(0.4, 0.7))
 
+        # Сохраняем новую позицию в очереди
+        st.session_state.current_queue_pos = end_idx + 1
         status_info.empty()
         st.rerun()
 
 if st.session_state.scraped_data:
     st.subheader("4. Результаты")
     df = pd.DataFrame(st.session_state.scraped_data)
-    st.dataframe(df.head(5))
+    st.dataframe(df.head(10))
     
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='Flagman_Combined', index=False)
+        df.to_excel(writer, sheet_name='Flagman_Data', index=False)
     
     st.download_button(
         label=f"📥 Скачать Excel ({len(st.session_state.scraped_data)} товаров)",
         data=output.getvalue(),
-        file_name="flagman_custom_skus.xlsx",
+        file_name="flagman_custom_export.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
