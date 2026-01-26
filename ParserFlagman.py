@@ -8,17 +8,17 @@ import random
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="Flagman Monitor Pro+", page_icon="🎣", layout="wide")
+st.set_page_config(page_title="Flagman Monitor Pro Ultra", page_icon="🎣", layout="wide")
 
-# --- Инициализация Session State ---
+# --- Инициализация памяти сессии ---
 if 'all_links' not in st.session_state:
     st.session_state.all_links = []
 if 'scraped_data' not in st.session_state:
     st.session_state.scraped_data = []
 if 'found_categories' not in st.session_state:
     st.session_state.found_categories = []
-if 'current_queue_pos' not in st.session_state:
-    st.session_state.current_queue_pos = 1
+if 'current_pos' not in st.session_state:
+    st.session_state.current_pos = 1
 
 # --- Функции парсинга ---
 
@@ -103,31 +103,31 @@ def parse_page_content(soup):
             
     return title, description_clean, description_html, chars, product_json
 
-# --- Интерфейс ---
+# --- ИНТЕРФЕЙС ---
 
-st.title("🎣 Flagman Monitor Pro+")
+st.title("🎣 Flagman Smart Monitor Pro+")
 
 with st.sidebar:
-    st.header("Управление")
-    if st.button("🗑 Сбросить всё"):
+    st.header("Настройки")
+    if st.button("🗑 Сбросить все данные"):
         st.session_state.all_links = []
         st.session_state.scraped_data = []
         st.session_state.found_categories = []
-        st.session_state.current_queue_pos = 1
+        st.session_state.current_pos = 1
         st.rerun()
     
-    if st.button("📍 Начать с позиции №1"):
-        st.session_state.current_queue_pos = 1
+    if st.button("📍 Вернуться к началу очереди"):
+        st.session_state.current_pos = 1
         st.rerun()
 
-st.subheader("1. Настройка категории")
-col_url, col_pg = st.columns([3, 1])
-with col_url:
-    input_url = st.text_input("Ссылка на категорию", placeholder="https://flagman.ua/ru/kotushky/c166336")
-with col_pg:
-    pages_limit = st.number_input("Стр. в каждом подразделе (0=все)", min_value=0, value=1)
+st.subheader("1. Анализ категории")
+c1, c2 = st.columns([3, 1])
+with c1:
+    input_url = st.text_input("Вставьте ссылку", placeholder="https://flagman.ua/ru/kotushky/c166336")
+with c2:
+    pages_limit = st.number_input("Стр. (0=все)", min_value=0, value=1)
 
-if st.button("🔍 Найти подразделы"):
+if st.button("🔍 Проверить структуру"):
     if input_url:
         base_url = input_url.replace("/ru/", "/")
         soup_main = get_soup(base_url)
@@ -136,104 +136,96 @@ if st.button("🔍 Найти подразделы"):
         st.rerun()
 
 if st.session_state.found_categories:
-    st.subheader("2. Выбор подразделов")
+    st.subheader("2. Выбор разделов")
     cat_map = {c['name']: c['url'] for c in st.session_state.found_categories}
-    selected_cat_names = st.multiselect("Мониторить подразделы:", options=list(cat_map.keys()), default=list(cat_map.keys()))
+    selected_cats = st.multiselect("Мониторить подразделы:", options=list(cat_map.keys()), default=list(cat_map.keys()))
     
-    if st.button("🔎 Собрать список ссылок"):
-        all_p_links = []
-        with st.spinner("Сбор всех ссылок..."):
-            for name in selected_cat_names:
+    if st.button("🔎 Собрать все ссылки"):
+        all_links = []
+        with st.spinner("Сбор ссылок..."):
+            for name in selected_cats:
                 links = get_product_links(cat_map[name], None if pages_limit == 0 else pages_limit)
-                all_p_links.extend(links)
-            st.session_state.all_links = list(dict.fromkeys(all_p_links))
+                all_links.extend(links)
+            st.session_state.all_links = list(dict.fromkeys(all_links))
         st.rerun()
 
 if st.session_state.all_links:
     total = len(st.session_state.all_links)
-    scraped_count = len(st.session_state.scraped_data)
+    found_count = len(st.session_state.scraped_data)
     
     st.subheader("3. Фильтры и запуск")
     
-    col_skus, col_opts = st.columns([2, 1])
-    with col_skus:
-        skus_raw = st.text_area("Список Артикулов для фильтра (опционально):", height=100)
-    with col_opts:
-        clean_html_flag = st.checkbox("Очищать HTML в описании", value=True)
+    col_sk, col_ht = st.columns([2, 1])
+    with col_sk:
+        skus_raw = st.text_area("Список Артикулов для поиска (необязательно):", height=100)
+    with col_ht:
+        clean_html = st.checkbox("Очищать HTML теги", value=True)
     
     target_skus = [x.strip() for x in re.split(r'[,\n\s]+', skus_raw) if x.strip()] if skus_raw else []
 
-    st.info(f"📋 Очередь: **{total}** | 📍 Тек. позиция: **{st.session_state.current_queue_pos}** | ✅ Найдено: **{scraped_count}**")
+    # Тот самый блок информации
+    st.info(f"📋 Всего в очереди: **{total}** | 📍 Текущая позиция: **{st.session_state.current_pos}** | ✅ Найдено: **{found_count}**")
     
-    col_from, col_count, col_go = st.columns([1, 1, 2])
-    with col_from:
-        # Используем SessionState для управления значением
-        start_idx = st.number_input("Начать с №", min_value=1, max_value=total+1, key="current_queue_pos")
-    with col_count:
-        batch_size = st.number_input("Кол-во для проверки", min_value=1, max_value=2000, value=100)
+    col_f, col_c, col_g = st.columns([1, 1, 2])
+    with col_f:
+        # Убрали привязку key, чтобы не было ошибки Bad Message Format
+        start_idx = st.number_input("Начать с №", min_value=1, max_value=max(total, st.session_state.current_pos), value=st.session_state.current_pos)
+    with col_c:
+        batch_size = st.number_input("Кол-во для пачки", min_value=1, max_value=2000, value=100)
     
-    if col_go.button("🚀 ЗАПУСТИТЬ ПАРСИНГ ПАЧКИ"):
-        end_idx = min(start_idx + batch_size - 1, total)
-        work_links = st.session_state.all_links[int(start_idx)-1 : int(end_idx)]
+    if col_g.button("🚀 ЗАПУСТИТЬ ПАРСИНГ"):
+        end_idx = min(int(start_idx) + int(batch_size) - 1, total)
+        work_links = st.session_state.all_links[int(start_idx)-1 : end_idx]
         
         bar = st.progress(0)
-        status_info = st.empty()
-        
+        st_info = st.empty()
         skip_keys = ["Код товару", "Код товара", "Артикул", "Артикул товару", "Виробник", "Производитель"]
 
         for i, link in enumerate(work_links):
-            current_num = int(start_idx) + i
-            status_info.write(f"🔹 Проверка **{current_num} из {total}**...")
+            curr_num = int(start_idx) + i
+            st_info.write(f"🔹 Проверка **{curr_num} из {total}**...")
             
-            ua_link = link.replace("/ru/", "/")
-            ru_link = link.replace("flagman.ua/", "flagman.ua/ru/")
-            
-            soup_ua = get_soup(ua_link, "uk")
+            soup_ua = get_soup(link.replace("/ru/", "/"), "uk")
             if not soup_ua: continue
             
             t_ua, d_ua_cl, d_ua_rw, c_ua, j_ua = parse_page_content(soup_ua)
             sku = j_ua.get("sku", "N/A")
 
+            # Проверка фильтра
             if target_skus and sku not in target_skus:
                 bar.progress((i + 1) / len(work_links))
                 continue
 
-            # Если SKU подошел, парсим русскую версию
-            soup_ru = get_soup(ru_link, "ru")
+            # Если ок - парсим RU
+            st_info.write(f"✅ Парсинг: **{sku}**")
+            soup_ru = get_soup(link.replace("flagman.ua/", "flagman.ua/ru/"), "ru")
             t_ru, d_ru_cl, d_ru_rw, c_ru, j_ru = parse_page_content(soup_ru)
             
-            img_tags = soup_ua.select(".product-images img")
-            clean_image_urls = [img.get('src') for img in img_tags if img.get('src') and not img.get('src').startswith("data:image")]
+            imgs = [img.get('src') for img in soup_ua.select(".product-images img") 
+                    if img.get('src') and not img.get('src').startswith("data:image")]
             
-            desc_ua = d_ua_cl if clean_html_flag else d_ua_rw
-            desc_ru = d_ru_cl if clean_html_flag else d_ru_rw
-
             row = {
                 "Артикул": sku,
                 "Бренд": j_ua.get("brand", {}).get("name", "N/A"),
                 "Цена": j_ua.get("offers", {}).get("price", "N/A"),
                 "Назва (UA)": t_ua, "Название (RU)": t_ru,
-                "Опис (UA)": desc_ua, "Описание (RU)": desc_ru
+                "Опис (UA)": d_ua_cl if clean_html else d_ua_rw,
+                "Описание (RU)": d_ru_cl if clean_html else d_ru_rw
             }
-            
-            for idx, img_url in enumerate(clean_image_urls[:15]): row[f"Фото {idx+1}"] = img_url
+            for idx, url in enumerate(imgs[:15]): row[f"Фото {idx+1}"] = url
             for k, v in c_ua.items():
                 if k not in skip_keys: row[f"{k} (UA)"] = v
             for k, v in c_ru.items():
                 if k not in skip_keys: row[f"{k} (RU)"] = v
 
-            row["Ссылка (UA)"] = ua_link
-            row["Ссылка (RU)"] = ru_link
-
             if not any(d['Артикул'] == sku for d in st.session_state.scraped_data):
                 st.session_state.scraped_data.append(row)
             
             bar.progress((i + 1) / len(work_links))
-            time.sleep(random.uniform(0.1, 0.3))
+            time.sleep(0.1)
 
-        # Обновляем позицию (Streamlit сам обновит widget, так как они связаны через key)
-        st.session_state.current_queue_pos = min(end_idx + 1, total)
-        status_info.empty()
+        st.session_state.current_pos = min(end_idx + 1, total)
+        st_info.empty()
         st.rerun()
 
 if st.session_state.scraped_data:
@@ -241,9 +233,9 @@ if st.session_state.scraped_data:
     df = pd.DataFrame(st.session_state.scraped_data)
     st.dataframe(df.head(5))
     
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='Flagman', index=False)
     
-    st.download_button(label=f"📥 Скачать Excel ({len(df)} товаров)", data=output.getvalue(), 
-                       file_name="flagman_monitor.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(f"📥 Скачать Excel ({len(df)} товаров)", data=out.getvalue(), 
+                       file_name="flagman_report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
